@@ -53,13 +53,28 @@ for (const p of (args.context ?? "").split(",").filter(Boolean)) {
 }
 if (args.instruction) contextParts.push(`--- instrucción ---\n${args.instruction}`);
 
+const SCHEMAS = {
+  brief: ["id", "tema", "angulo", "publico", "dolor", "fuentes", "duplicado"],
+  demo: ["slug", "lenguaje", "problema", "estado_roto", "fix", "comando_run",
+         "salida_esperada", "lineas_clave", "commit_fijado"],
+  guion: ["duracion_objetivo", "beats"],
+  storyboard: ["formato", "beats", "assets"],
+  render: ["clips", "audio"],
+  qc: ["aprobado", "score", "fallos"],
+};
+
 const formatRule = mode === "files"
   ? 'Responde SOLO con un objeto JSON de la forma {"files": {"ruta/relativa": "contenido"}}. Sin markdown, sin explicaciones.'
-  : "Responde SOLO con el JSON de salida del rol. Sin markdown, sin explicaciones.";
+  : "Responde SOLO con el JSON de salida del rol. Sin markdown, sin explicaciones, sin saludos ni confirmaciones.";
+
+const schemaRule = kind && SCHEMAS[kind]
+  ? `\n\nEl JSON de salida DEBE tener exactamente estas claves de primer nivel: ${SCHEMAS[kind].join(", ")}.`
+  : "";
 
 const messages = [
   { role: "system", content: `${roleText}\n\n${contract}\n\n${formatRule}` },
-  { role: "user", content: contextParts.join("\n\n") || "(sin contexto)" },
+  { role: "user", content: (contextParts.join("\n\n") || "(sin contexto)") +
+      `\n\n--- tarea ---\nEjecuta tu rol sobre el contexto anterior y devuelve tu archivo de salida.${schemaRule}\n${formatRule}` },
 ];
 
 function extractJson(text) {
@@ -69,11 +84,15 @@ function extractJson(text) {
   return JSON.parse(t.slice(a, b + 1));
 }
 
+const jsonModeHost = baseUrl.includes("models.github.ai") || baseUrl.includes("api.openai.com");
+
 async function callModel() {
+  const payload = { model, temperature: 0, messages };
+  if (jsonModeHost && mode === "json") payload.response_format = { type: "json_object" };
   const res = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({ model, temperature: 0, messages }),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(`API ${res.status}: ${(await res.text()).slice(0, 300)}`);
   const data = await res.json();
@@ -91,10 +110,16 @@ function gate() {
 for (let attempt = 1; attempt <= maxAttempts; attempt++) {
   let parsed;
   try {
-    parsed = extractJson(await callModel());
+    const raw = await callModel();
+    try {
+      parsed = extractJson(raw);
+    } catch (e) {
+      console.error(`respuesta del modelo sin JSON (primeros 300 caracteres): ${raw.slice(0, 300)}`);
+      throw e;
+    }
   } catch (e) {
     if (attempt === maxAttempts) fail(`sin JSON válido tras ${maxAttempts} intentos: ${e.message}`);
-    messages.push({ role: "user", content: `Tu respuesta anterior no era JSON válido (${e.message}). Devuelve SOLO el JSON.` });
+    messages.push({ role: "user", content: `Tu respuesta anterior no era JSON válido (${e.message}). Devuelve SOLO el JSON de salida, sin ningún otro texto.` });
     continue;
   }
 
