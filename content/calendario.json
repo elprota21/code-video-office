@@ -1,0 +1,5 @@
+{
+  "patrones_ok": [],
+  "patrones_no": [],
+  "cola": [{ "tema": "saludo con None en Python", "angulo": "f-string con fallback" }]
+}

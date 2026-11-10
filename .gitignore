@@ -1,0 +1,5 @@
+build/
+work/
+node_modules/
+*.mp4
+*.wav

@@ -1,0 +1,105 @@
+name: office
+on:
+  workflow_dispatch:
+    inputs:
+      tema: { required: true, type: string }
+      formato: { required: false, type: choice, options: ["16:9", "9:16"], default: "16:9" }
+      dry_run: { required: false, type: boolean, default: true }
+
+permissions:
+  contents: read
+
+concurrency:
+  group: office-${{ github.ref }}
+  cancel-in-progress: false
+
+# Conexión con el modelo. Por defecto usa GitHub Models con el token que
+# Actions ya trae (sin clave propia, nivel gratis con límites): basta el
+# permiso `models: read` en los jobs que llaman al motor.
+# Para usar otro proveedor basta con crear el SECRET LLM_API_KEY y las
+# VARIABLES LLM_BASE_URL / LLM_MODEL del repo (ver .env.example).
+env:
+  LLM_API_KEY: ${{ secrets.LLM_API_KEY || secrets.GITHUB_TOKEN }}
+  LLM_BASE_URL: ${{ vars.LLM_BASE_URL || 'https://models.github.ai/inference' }}
+  LLM_MODEL: ${{ vars.LLM_MODEL || 'openai/gpt-4o-mini' }}
+
+jobs:
+  material:
+    runs-on: ubuntu-latest
+    permissions: { contents: write, pull-requests: write, models: read }
+    outputs:
+      id: ${{ steps.id.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - id: id
+        run: echo "id=$(date +%s)-${{ github.run_id }}" >> "$GITHUB_OUTPUT"
+      - run: mkdir -p work/${{ steps.id.outputs.id }} build
+      - name: roles 00-01 (investigador y arquitecto, con puerta)
+        run: |
+          node tools/validate.mjs --selftest
+          node tools/run-role.mjs --role .agents/00-investigador.md \
+            --context content/calendario.json,content/publicado.json \
+            --instruction "tema: ${{ inputs.tema }}" \
+            --out work/${{ steps.id.outputs.id }}/brief.json --kind brief
+          node tools/run-role.mjs --role .agents/01-arquitecto-demo.md \
+            --context work/${{ steps.id.outputs.id }}/brief.json \
+            --out work/${{ steps.id.outputs.id }}/demo.json --kind demo
+          echo "roles 02-03: el programador escribe el demo (modo files) y el verificador lo corre en limpio; quedan como pasos siguientes de este job"
+      - uses: actions/upload-artifact@v4
+        with: { name: material, path: "work/ demos/", retention-days: 7 }
+
+  produccion:
+    needs: material
+    runs-on: ubuntu-latest
+    permissions: { contents: read, models: read }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - uses: actions/download-artifact@v4
+        with: { name: material }
+      - run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-jetbrains-mono
+          pip install pytest piper-tts
+          pytest -q demos/ || exit 1
+      - name: roles 04-05 (guionista y director, con puerta)
+        run: |
+          ID=$(ls work | head -1)
+          node tools/run-role.mjs --role .agents/04-guionista.md \
+            --context work/$ID/demo.json \
+            --out work/$ID/guion.json --kind guion
+          node tools/run-role.mjs --role .agents/05-director.md \
+            --context work/$ID/guion.json \
+            --instruction "formato: ${{ inputs.formato }}" \
+            --out work/$ID/storyboard.json --kind storyboard
+          echo "roles 06-08: voz (Piper), render (VHS/Remotion/Manim) y edición (FFmpeg) corren sobre guion.json y storyboard.json"
+      - uses: actions/upload-artifact@v4
+        with: { name: video, path: build/, retention-days: 7 }
+
+  calidad:
+    needs: produccion
+    runs-on: ubuntu-latest
+    permissions: { contents: read, issues: write }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: video }
+      - run: |
+          ffprobe -v error -show_entries format=duration -of csv=p=0 build/*.mp4
+          echo "rol 09: audita rúbrica y escribe qc.json"
+      - uses: actions/upload-artifact@v4
+        with: { name: qc, path: work/, retention-days: 7 }
+
+  publicacion:
+    needs: calidad
+    if: inputs.dry_run == false
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: qc }
+      - run: |
+          echo "rol 10: sube y actualiza publicado.json"
