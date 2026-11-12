@@ -48,7 +48,12 @@ jobs:
             --out work/${{ steps.id.outputs.id }}/demo.json --kind demo
           echo "roles 02-03: el programador escribe el demo (modo files) y el verificador lo corre en limpio; quedan como pasos siguientes de este job"
       - uses: actions/upload-artifact@v4
-        with: { name: material, path: "work/ demos/", retention-days: 7 }
+        with:
+          name: material
+          path: |
+            work/
+            demos/
+          retention-days: 7
 
   produccion:
     needs: material
